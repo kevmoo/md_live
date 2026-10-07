@@ -25,6 +25,7 @@ export 'src/md_live_core.dart'
         extractLiveSpanValues,
         extractSentinelBlockBody,
         formatCommaInt,
+        normalizeMarkdownTableFormatting,
         parseMarkdownTableHeader,
         projectInlineLiveSpans,
         projectSentinelMarkdown,
@@ -42,3 +43,4 @@ export 'src/sentinel_sources.dart'
         filterSentinelRecords,
         parseSentinelSourceSpec,
         resolveSentinelJsonSlice;
+export 'src/verify.dart' show MdLiveVerificationException, expectMdLiveClean;

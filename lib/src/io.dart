@@ -64,10 +64,15 @@ int syncOrVerifyGeneratedFiles({
     final drift = <String>[
       for (final entry in expectedFiles.entries)
         if (!File(p.join(dirPath, entry.key)).existsSync() ||
-            File(
-                  p.join(dirPath, entry.key),
-                ).readAsStringSync().replaceAll('\r\n', '\n') !=
-                entry.value.replaceAll('\r\n', '\n'))
+            (entry.key.endsWith('.md')
+                ? normalizeMarkdownTableFormatting(
+                        File(p.join(dirPath, entry.key)).readAsStringSync(),
+                      ) !=
+                      normalizeMarkdownTableFormatting(entry.value)
+                : File(
+                        p.join(dirPath, entry.key),
+                      ).readAsStringSync().replaceAll('\r\n', '\n') !=
+                      entry.value.replaceAll('\r\n', '\n')))
           entry.key,
     ];
     if (drift.isNotEmpty) {
@@ -93,6 +98,13 @@ int syncOrVerifyGeneratedFiles({
   String markdownPath, {
   Set<String> namespaces = const {},
   TableGuardMode guardMode = TableGuardMode.none,
+  Map<String, SentinelRowBuilder> rowBuilders = const {},
+  Map<String, Map<String, String Function(Map<String, dynamic> row)>>
+      cellFormatters =
+      const {},
+  Map<String, List<List<String>>> customTableRows = const {},
+  Map<String, Object> inlineValues = const {},
+  Set<String> continuousIndexCollections = const {},
 }) {
   final mdFile = File(markdownPath);
   if (!mdFile.existsSync()) {
@@ -125,13 +137,26 @@ int syncOrVerifyGeneratedFiles({
       ? namespaces
       : extractSentinelNamespaces(markdown);
   var current = markdown;
-  for (final ns in activeNamespaces) {
-    current = projectSentinelMarkdown(
-      current,
-      namespace: ns,
-      jsonByPath: jsonByPath,
-      guardMode: guardMode,
-    );
+  try {
+    if (activeNamespaces.isEmpty && inlineValues.isNotEmpty) {
+      current = projectInlineLiveSpans(current, inlineValues);
+    } else {
+      for (final ns in activeNamespaces) {
+        current = projectSentinelMarkdown(
+          current,
+          namespace: ns,
+          jsonByPath: jsonByPath,
+          rowBuilders: rowBuilders,
+          cellFormatters: cellFormatters,
+          customTableRows: customTableRows,
+          inlineValues: inlineValues,
+          continuousIndexCollections: continuousIndexCollections,
+          guardMode: guardMode,
+        );
+      }
+    }
+  } on Object catch (e) {
+    return (projected: markdown, errors: ['${p.basename(markdownPath)}: $e']);
   }
   return (projected: current, errors: const []);
 }

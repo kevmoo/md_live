@@ -123,3 +123,17 @@ Total items: <span data-live="count">0</span>
   print(projected);
 }
 ```
+
+## `package:test` Verification (`expectMdLiveClean`)
+
+Verify in a single line that all sentinel-backed Markdown files in a repository
+stay in sync with their JSON sources (including Prettier-aligned pipe tables):
+
+```dart
+import 'package:md_live/md_live.dart';
+import 'package:test/scaffolding.dart';
+
+void main() {
+  test('md_live', expectMdLiveClean);
+}
+```
