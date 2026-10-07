@@ -299,6 +299,62 @@ Count: <span data-live="total">0</span> (`<span data-live="ignored">x</span>`)
       );
       expect(extractLiveSpanValues(projected), [(key: 'total', value: '1')]);
     });
+
+    test('renderSentinelTableBlock and renderLiveSpan emit valid sentinels', () {
+      expect(
+        renderLiveSpan('metric.rps_v1', '12,500'),
+        '<span data-live="metric.rps_v1">12,500</span>',
+      );
+      expect(() => renderLiveSpan('bad key!', 1), throwsArgumentError);
+
+      final block = renderSentinelTableBlock(
+        namespace: 'bench',
+        sentinelId: 'workloads_v2',
+        src: 'matrix.json#workloads',
+        cols: 'id,rps',
+        headers: const ['Workload', 'RPS'],
+        alignments: const [':---', '---:'],
+      );
+      expect(
+        block,
+        '<!-- bench:workloads_v2:start src="matrix.json#workloads" cols="id,rps" -->\n\n'
+        '| Workload | RPS |\n'
+        '| :--- | ---: |\n\n'
+        '<!-- bench:workloads_v2:end -->',
+      );
+    });
+
+    test(
+      'formatCommaInt, formatCommaNum, and formatSpeedupRatio format cells',
+      () {
+        expect(formatCommaInt(0), '0');
+        expect(formatCommaInt(-125), '-125');
+        expect(formatCommaInt(-1250000), '-1,250,000');
+        expect(formatCommaNum(12500), '12,500');
+        expect(formatCommaNum(2.5), '3');
+        expect(formatCommaNum(2.5, roundHalfToEven: true), '2');
+        expect(formatCommaNum(3.5, roundHalfToEven: true), '4');
+        expect(formatCommaNum(-2.5, roundHalfToEven: true), '-2');
+        expect(formatCommaNum(-3.5, roundHalfToEven: true), '-4');
+
+        expect(formatSpeedupRatio(null, 10), 'N/A');
+        expect(formatSpeedupRatio(10, null, nullText: '—'), '—');
+        expect(formatSpeedupRatio(197.7, 100), '**1.98x**');
+        expect(
+          formatSpeedupRatio(197.7, 100, includeDeltaPercent: true),
+          '**1.98x** (+97.7%)',
+        );
+        expect(
+          formatSpeedupRatio(94.9, 100, includeDeltaPercent: true),
+          '**0.95x** (-5.1%)',
+        );
+        expect(formatSpeedupRatio(197.7, 100, unstable: true), '**1.98x** ⚠️');
+        expect(
+          formatSpeedupRatio(10, 0, includeDeltaPercent: true),
+          '**0.00x** (-100.0%)',
+        );
+      },
+    );
   });
 
   group('io & syncRemoteGithubPrStatuses', () {

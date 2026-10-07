@@ -189,6 +189,42 @@ String renderKeyedMarkdownTable(
   );
 }
 
+/// Renders a sentinel-wrapped GFM pipe table block
+/// (`<!-- $namespace:$sentinelId:start ... -->` ...
+/// `<!-- $namespace:$sentinelId:end -->`).
+///
+/// When [rows] is omitted or empty, emits the header and alignment rows inside
+/// the sentinel markers so a downstream [projectSentinelMarkdown] pass can
+/// populate the body.
+String renderSentinelTableBlock({
+  required String namespace,
+  required String sentinelId,
+  required List<String> headers,
+  required List<String> alignments,
+  Iterable<List<String>> rows = const [],
+  String? src,
+  String? cols,
+  TableGuardMode guardMode = TableGuardMode.none,
+  String? guardComment = 'prevent table wrapping',
+}) {
+  final table = renderGuardedMarkdownTable(
+    headers: headers,
+    alignments: alignments,
+    rows: rows,
+    guardMode: guardMode,
+    guardComment: guardComment,
+  );
+  final srcAttr = (src != null && src.trim().isNotEmpty)
+      ? ' src="${src.trim()}"'
+      : '';
+  final colsAttr = (cols != null && cols.trim().isNotEmpty)
+      ? ' cols="${cols.trim()}"'
+      : '';
+  return '<!-- $namespace:$sentinelId:start$srcAttr$colsAttr -->\n\n'
+      '$table\n\n'
+      '<!-- $namespace:$sentinelId:end -->';
+}
+
 /// Parsed GFM table header row, alignment row, [TableGuardMode], and optional
 /// `mdformat` guard comment extracted from an existing Markdown sentinel block.
 typedef ParsedMarkdownTableHeader = ({
@@ -505,6 +541,19 @@ _tryParseLiveSpanMatch(Match match) {
   return (openTag: openTag, key: key, inner: inner, closeTag: closeTag);
 }
 
+/// Renders an inline `<span data-live="$key">$value</span>` scalar element,
+/// validating that [key] matches `[a-zA-Z0-9_.:-]+`.
+String renderLiveSpan(String key, Object value) {
+  if (!_validLiveSpanKeyRegex.hasMatch(key)) {
+    throw ArgumentError.value(
+      key,
+      'key',
+      'data-live key must match [a-zA-Z0-9_.:-]+.',
+    );
+  }
+  return '<span data-live="$key">$value</span>';
+}
+
 /// Extracts all `(key: ..., value: ...)` pairs from `<span data-live="key">value</span>`
 /// elements in [markdown] (ignoring fenced code blocks and inline code spans).
 List<({String key, String value})> extractLiveSpanValues(String markdown) => [
@@ -583,10 +632,11 @@ String projectSentinelMarkdown(
 }
 
 /// Formats an integer with comma thousands separators (e.g. `195000` ->
-/// `195,000`).
+/// `195,000`, `-1250` -> `-1,250`).
 String formatCommaInt(int value) {
-  final str = value.toString();
+  final str = value.abs().toString();
   final buf = StringBuffer();
+  if (value < 0) buf.write('-');
   for (var i = 0; i < str.length; i++) {
     if (i > 0 && (str.length - i) % 3 == 0) {
       buf.write(',');
@@ -594,4 +644,51 @@ String formatCommaInt(int value) {
     buf.write(str[i]);
   }
   return buf.toString();
+}
+
+/// Rounds [value] to an integer and formats it with comma thousands separators.
+///
+/// When [roundHalfToEven] is `true`, uses round-half-to-even (banker's
+/// rounding) for `.5` ties to match IEEE 754 / Python `round()`; otherwise uses
+/// `num.round()`.
+String formatCommaNum(num value, {bool roundHalfToEven = false}) {
+  if (value is int) return formatCommaInt(value);
+  final v = value.toDouble();
+  final floor = v.floor();
+  final rounded = (roundHalfToEven && (v - floor == 0.5))
+      ? (floor.isEven ? floor : floor + 1)
+      : v.round();
+  return formatCommaInt(rounded);
+}
+
+/// Formats a speedup ratio (`numerator / denominator`) as a bold Markdown
+/// multiplier (`**1.98x**`), optionally appending a signed percentage delta
+/// (`(+97.7%)`) when [includeDeltaPercent] is `true` and a warning suffix
+/// (` ⚠️`) when [unstable] is `true`.
+///
+/// Returns [nullText] when either [numerator] or [denominator] is `null`.
+/// When `denominator <= 0`, treats the ratio as `0.0`.
+String formatSpeedupRatio(
+  num? numerator,
+  num? denominator, {
+  int decimals = 2,
+  bool includeDeltaPercent = false,
+  int deltaDecimals = 1,
+  bool unstable = false,
+  String nullText = 'N/A',
+}) {
+  if (numerator == null || denominator == null) return nullText;
+  final numVal = numerator.toDouble();
+  final denVal = denominator.toDouble();
+  final ratio = denVal > 0 ? (numVal / denVal) : 0.0;
+  var formatted = '**${ratio.toStringAsFixed(decimals)}x**';
+  if (includeDeltaPercent) {
+    final delta = (ratio - 1.0) * 100.0;
+    final sign = delta >= 0 ? '+' : '';
+    formatted = '$formatted ($sign${delta.toStringAsFixed(deltaDecimals)}%)';
+  }
+  if (unstable) {
+    formatted = '$formatted ⚠️';
+  }
+  return formatted;
 }

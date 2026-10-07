@@ -25,6 +25,8 @@ export 'src/md_live_core.dart'
         extractLiveSpanValues,
         extractSentinelBlockBody,
         formatCommaInt,
+        formatCommaNum,
+        formatSpeedupRatio,
         normalizeMarkdownTableFormatting,
         parseMarkdownTableHeader,
         projectInlineLiveSpans,
@@ -32,6 +34,8 @@ export 'src/md_live_core.dart'
         recordsList,
         renderGuardedMarkdownTable,
         renderKeyedMarkdownTable,
+        renderLiveSpan,
+        renderSentinelTableBlock,
         replaceSentinelBlock,
         replaceSentinelBlocks,
         resolveCollectionTableColumns;
