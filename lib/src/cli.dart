@@ -268,7 +268,8 @@ bool _projectOneFile(String rawPath, _ProjectionContext ctx) {
     return false;
   }
   final inSync =
-      existing.replaceAll('\r\n', '\n') == projected.replaceAll('\r\n', '\n');
+      normalizeMarkdownTableFormatting(existing) ==
+      normalizeMarkdownTableFormatting(projected);
   if (ctx.verifyOnly) {
     if (!inSync) {
       ctx.err.writeln('Drift detected in: $rawPath');

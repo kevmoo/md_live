@@ -352,4 +352,107 @@ Count: <span data-live="total">0</span> (`<span data-live="ignored">x</span>`)
       );
     });
   });
+
+  group('normalizeMarkdownTableFormatting & expectMdLiveClean', () {
+    test(
+      'normalizes Prettier-padded pipe tables while preserving fenced code',
+      () {
+        const prettierMd = '''
+# Title
+
+```markdown
+| Keep     |   Padding |
+| :------- | --------: |
+```
+
+| #     | Slot    |        Status |
+| :---- | :-----: | ------------: |
+| **1** | **H01** | ☑️ **MERGED** |
+''';
+        const unpaddedMd = '''
+# Title
+
+```markdown
+| Keep     |   Padding |
+| :------- | --------: |
+```
+
+| # | Slot | Status |
+| :--- | :---: | ---: |
+| **1** | **H01** | ☑️ **MERGED** |
+''';
+        expect(
+          normalizeMarkdownTableFormatting(prettierMd),
+          normalizeMarkdownTableFormatting(unpaddedMd),
+        );
+        expect(
+          normalizeMarkdownTableFormatting(prettierMd),
+          contains('| Keep     |   Padding |'),
+        );
+      },
+    );
+
+    test(
+      'expectMdLiveClean passes on Prettier-padded tables and fails on drift',
+      () async {
+        final json = {
+          'field_types': {'slot': 'slot_id', 'status': 'status'},
+          'table_columns': {
+            'runs': ['#index', 'slot', 'status'],
+          },
+          'runs': [
+            {'slot': 'H01', 'status': 'MERGED'},
+          ],
+        };
+        await d.dir('pkg', [
+          d.file('benchmarks.json', '${formatCompactJson(json)}\n'),
+          d.file(
+            'REPORT.md',
+            '<!-- bench:runs:start src="benchmarks.json#runs" -->\n\n'
+                '| #     | Slot    | Status        |\n'
+                '| :---- | :------ | :------------ |\n'
+                '| **1** | **H01** | ☑️ **MERGED** |\n\n'
+                '<!-- bench:runs:end -->\n',
+          ),
+        ]).create();
+
+        await expectMdLiveClean(
+          directoryPath: d.path('pkg'),
+          checkCompactJson: true,
+        );
+
+        File(d.path('pkg/REPORT.md')).writeAsStringSync(
+          '<!-- bench:runs:start src="benchmarks.json#runs" -->\n\n'
+          '| # | Slot | Status |\n'
+          '| :--- | :--- | :--- |\n'
+          '| **1** | **H01** | 🟢 **OPEN** |\n\n'
+          '<!-- bench:runs:end -->\n',
+        );
+
+        await expectLater(
+          () => expectMdLiveClean(directoryPath: d.path('pkg')),
+          throwsA(
+            isA<MdLiveVerificationException>()
+                .having((e) => e.failedFiles, 'failedFiles', ['REPORT.md'])
+                .having(
+                  (e) => e.message,
+                  'message',
+                  allOf(
+                    contains('@@ line 5 @@'),
+                    contains('dart run md_live sync REPORT.md'),
+                  ),
+                ),
+          ),
+        );
+      },
+    );
+
+    test('expectMdLiveClean fails when no sentinel files exist', () async {
+      await d.dir('empty_pkg', [d.file('README.md', '# Hello\n')]).create();
+      await expectLater(
+        () => expectMdLiveClean(directoryPath: d.path('empty_pkg')),
+        throwsA(isA<MdLiveVerificationException>()),
+      );
+    });
+  });
 }

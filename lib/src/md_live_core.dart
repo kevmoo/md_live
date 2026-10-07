@@ -209,6 +209,15 @@ final RegExp _mdformatOffGuardPattern = RegExp(
 );
 final RegExp _tableAlignmentCellPattern = RegExp(r'^:?-+:?$');
 
+String _canonicalizeAlignmentCell(String cell) {
+  final left = cell.startsWith(':');
+  final right = cell.endsWith(':');
+  if (left && right) return ':---:';
+  if (left) return ':---';
+  if (right) return '---:';
+  return '---';
+}
+
 List<String>? _trySplitPipeTableRow(String line) {
   final trimmed = line.trim();
   if (!trimmed.startsWith('|') ||
@@ -219,6 +228,30 @@ List<String>? _trySplitPipeTableRow(String line) {
   final inner = trimmed.substring(1, trimmed.length - 1);
   return inner.split(_unescapedPipePattern).map((c) => c.trim()).toList();
 }
+
+final RegExp _fencedBlockOrLineRegex = RegExp(
+  r'^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}\1[ \t]*$'
+  r'|([^\n]+)',
+  multiLine: true,
+);
+
+/// Normalizes `\r\n` line endings and canonicalizes GFM pipe table cell padding
+/// and alignment dash counts (`:---`, `:---:`, `---:`, `---`) outside fenced
+/// code blocks so Prettier (`mdf`)-formatted tables compare equal to `md_live`
+/// projections without ignoring cell content or prose whitespace.
+String normalizeMarkdownTableFormatting(String markdown) => markdown
+    .replaceAll('\r\n', '\n')
+    .replaceAllMapped(_fencedBlockOrLineRegex, (match) {
+      if (match.group(1) != null) return match.group(0)!;
+      final line = match.group(2)!;
+      final cells = _trySplitPipeTableRow(line);
+      if (cells == null) return line;
+      final normalizedCells =
+          (cells.isNotEmpty && cells.every(_tableAlignmentCellPattern.hasMatch))
+          ? [for (final c in cells) _canonicalizeAlignmentCell(c)]
+          : cells;
+      return '| ${normalizedCells.join(' | ')} |';
+    });
 
 List<List<String>> _extractFirstTwoPipeRows(String blockBody) {
   final pipeRows = <List<String>>[];
@@ -256,17 +289,17 @@ ParsedMarkdownTableHeader parseMarkdownTableHeader(
     );
   }
   final headers = [for (final c in pipeRows[0]) c.replaceAll(r'\|', '|')];
-  final alignments = pipeRows[1];
+  final rawAlignments = pipeRows[1];
   if (headers.isEmpty ||
-      headers.length != alignments.length ||
-      !alignments.every(_tableAlignmentCellPattern.hasMatch)) {
+      headers.length != rawAlignments.length ||
+      !rawAlignments.every(_tableAlignmentCellPattern.hasMatch)) {
     throw const FormatException(
       'Invalid GFM table header or alignment row in sentinel block.',
     );
   }
   return (
     headers: headers,
-    alignments: alignments,
+    alignments: [for (final a in rawAlignments) _canonicalizeAlignmentCell(a)],
     guardMode: guardMode,
     guardComment: guardComment,
   );
