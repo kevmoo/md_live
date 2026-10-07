@@ -7,3 +7,5 @@
   `package:test` drift verification (`test('md_live', expectMdLiveClean);`) and
   `normalizeMarkdownTableFormatting` so Prettier (`mdf`)-padded pipe tables
   compare equal to `md_live` projections.
+- Add `renderSentinelTableBlock`, `renderLiveSpan`, `formatCommaNum`, and
+  `formatSpeedupRatio` (plus negative-integer handling in `formatCommaInt`).
