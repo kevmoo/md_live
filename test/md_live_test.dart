@@ -300,7 +300,7 @@ Count: <span data-live="total">0</span> (`<span data-live="ignored">x</span>`)
       expect(extractLiveSpanValues(projected), [(key: 'total', value: '1')]);
     });
 
-    test('renderSentinelTableBlock and renderLiveSpan emit valid sentinels', () {
+    test('renderSentinelTableBlock and renderLiveSpan emit sentinels', () {
       expect(
         renderLiveSpan('metric.rps_v1', '12,500'),
         '<span data-live="metric.rps_v1">12,500</span>',
@@ -317,7 +317,8 @@ Count: <span data-live="total">0</span> (`<span data-live="ignored">x</span>`)
       );
       expect(
         block,
-        '<!-- bench:workloads_v2:start src="matrix.json#workloads" cols="id,rps" -->\n\n'
+        '<!-- bench:workloads_v2:start '
+        'src="matrix.json#workloads" cols="id,rps" -->\n\n'
         '| Workload | RPS |\n'
         '| :--- | ---: |\n\n'
         '<!-- bench:workloads_v2:end -->',
