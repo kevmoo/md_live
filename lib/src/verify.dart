@@ -35,6 +35,10 @@ String _displayPath(String rootDir, String fullPath) =>
     ? p.relative(fullPath, from: rootDir)
     : fullPath;
 
+bool _hasLiveMarkers(String markdown, {required bool includeLiveSpans}) =>
+    extractSentinelNamespaces(markdown).isNotEmpty ||
+    (includeLiveSpans && extractLiveSpanValues(markdown).isNotEmpty);
+
 List<String> _discoverSentinelMarkdownFiles(
   String rootDir, {
   required bool includeLiveSpans,
@@ -45,20 +49,20 @@ List<String> _discoverSentinelMarkdownFiles(
   final queue = <Directory>[dir];
 
   while (queue.isNotEmpty) {
-    final current = queue.removeLast();
-    for (final entity in current.listSync(followLinks: false)) {
+    for (final entity in queue.removeLast().listSync(followLinks: false)) {
       final name = p.basename(entity.path);
       if (name.startsWith('.') || _ignoredDirectoryNames.contains(name)) {
         continue;
       }
       if (entity is Directory) {
         queue.add(entity);
-      } else if (entity is File && name.endsWith('.md')) {
-        final content = entity.readAsStringSync();
-        if (extractSentinelNamespaces(content).isNotEmpty ||
-            (includeLiveSpans && extractLiveSpanValues(content).isNotEmpty)) {
-          discovered.add(p.normalize(entity.path));
-        }
+      } else if (entity is File &&
+          name.endsWith('.md') &&
+          _hasLiveMarkers(
+            entity.readAsStringSync(),
+            includeLiveSpans: includeLiveSpans,
+          )) {
+        discovered.add(p.normalize(entity.path));
       }
     }
   }
@@ -133,9 +137,10 @@ typedef _VerifyConfig = ({
     );
   }
   final existing = file.readAsStringSync();
-  if (extractSentinelNamespaces(existing).isEmpty &&
-      (config.inlineValues.isEmpty ||
-          extractLiveSpanValues(existing).isEmpty)) {
+  if (!_hasLiveMarkers(
+    existing,
+    includeLiveSpans: config.inlineValues.isNotEmpty,
+  )) {
     return (
       failureMessage:
           'Markdown file "$display" contains no sentinel blocks '
@@ -243,12 +248,7 @@ Future<void> expectMdLiveClean({
     p.absolute(directoryPath ?? Directory.current.path),
   );
   final targetPaths = markdownFiles != null
-      ? [
-          for (final raw in markdownFiles)
-            p.isAbsolute(raw)
-                ? p.normalize(raw)
-                : p.normalize(p.join(rootDir, raw)),
-        ]
+      ? [for (final raw in markdownFiles) p.normalize(p.join(rootDir, raw))]
       : _discoverSentinelMarkdownFiles(
           rootDir,
           includeLiveSpans: inlineValues.isNotEmpty,

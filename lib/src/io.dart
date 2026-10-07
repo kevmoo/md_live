@@ -60,32 +60,29 @@ int syncOrVerifyGeneratedFiles({
     return 1;
   }
 
-  if (verifyOnly) {
-    final drift = <String>[
-      for (final entry in expectedFiles.entries)
-        if (!File(p.join(dirPath, entry.key)).existsSync() ||
-            (entry.key.endsWith('.md')
-                ? normalizeMarkdownTableFormatting(
-                        File(p.join(dirPath, entry.key)).readAsStringSync(),
-                      ) !=
-                      normalizeMarkdownTableFormatting(entry.value)
-                : File(
-                        p.join(dirPath, entry.key),
-                      ).readAsStringSync().replaceAll('\r\n', '\n') !=
-                      entry.value.replaceAll('\r\n', '\n')))
-          entry.key,
-    ];
-    if (drift.isNotEmpty) {
-      errSink.writeln('Drift detected in: ${drift.join(', ')}');
-      return 1;
+  if (!verifyOnly) {
+    for (final entry in expectedFiles.entries) {
+      File(p.join(dirPath, entry.key)).writeAsStringSync(entry.value);
     }
-    outSink.writeln('Verification PASSED (JSON and sentinel blocks in sync).');
     return 0;
   }
 
+  final drift = <String>[];
   for (final entry in expectedFiles.entries) {
-    File(p.join(dirPath, entry.key)).writeAsStringSync(entry.value);
+    final file = File(p.join(dirPath, entry.key));
+    final normalize = entry.key.endsWith('.md')
+        ? normalizeMarkdownTableFormatting
+        : (String s) => s.replaceAll('\r\n', '\n');
+    if (!file.existsSync() ||
+        normalize(file.readAsStringSync()) != normalize(entry.value)) {
+      drift.add(entry.key);
+    }
   }
+  if (drift.isNotEmpty) {
+    errSink.writeln('Drift detected in: ${drift.join(', ')}');
+    return 1;
+  }
+  outSink.writeln('Verification PASSED (JSON and sentinel blocks in sync).');
   return 0;
 }
 
@@ -122,43 +119,43 @@ int syncOrVerifyGeneratedFiles({
 
   final jsonByPath = <String, Map<String, dynamic>>{};
   for (final src in extractSentinelJsonSources(markdown)) {
-    final spec = parseSentinelSourceSpec(src);
-    if (jsonByPath.containsKey(spec.filePath)) continue;
-    final raw = _readCachedFile(p.join(baseDir, spec.filePath), rawCache);
-    if (raw != null) {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        jsonByPath[spec.filePath] = Map<String, dynamic>.from(decoded);
-      }
+    final filePath = parseSentinelSourceSpec(src).filePath;
+    if (jsonByPath.containsKey(filePath)) continue;
+    final raw = _readCachedFile(p.join(baseDir, filePath), rawCache);
+    if (raw == null) continue;
+    if (jsonDecode(raw) case final Map<dynamic, dynamic> m) {
+      jsonByPath[filePath] = Map<String, dynamic>.from(m);
     }
   }
 
   final activeNamespaces = namespaces.isNotEmpty
       ? namespaces
       : extractSentinelNamespaces(markdown);
-  var current = markdown;
   try {
-    if (activeNamespaces.isEmpty && inlineValues.isNotEmpty) {
-      current = projectInlineLiveSpans(current, inlineValues);
-    } else {
-      for (final ns in activeNamespaces) {
-        current = projectSentinelMarkdown(
-          current,
-          namespace: ns,
-          jsonByPath: jsonByPath,
-          rowBuilders: rowBuilders,
-          cellFormatters: cellFormatters,
-          customTableRows: customTableRows,
-          inlineValues: inlineValues,
-          continuousIndexCollections: continuousIndexCollections,
-          guardMode: guardMode,
-        );
-      }
+    if (activeNamespaces.isEmpty) {
+      final projected = inlineValues.isNotEmpty
+          ? projectInlineLiveSpans(markdown, inlineValues)
+          : markdown;
+      return (projected: projected, errors: const []);
     }
+    var current = markdown;
+    for (final ns in activeNamespaces) {
+      current = projectSentinelMarkdown(
+        current,
+        namespace: ns,
+        jsonByPath: jsonByPath,
+        rowBuilders: rowBuilders,
+        cellFormatters: cellFormatters,
+        customTableRows: customTableRows,
+        inlineValues: inlineValues,
+        continuousIndexCollections: continuousIndexCollections,
+        guardMode: guardMode,
+      );
+    }
+    return (projected: current, errors: const []);
   } on Object catch (e) {
     return (projected: markdown, errors: ['${p.basename(markdownPath)}: $e']);
   }
-  return (projected: current, errors: const []);
 }
 
 ({bool isGithubPr, KnownStatus? status}) _querySingleGithubPrStatus(
