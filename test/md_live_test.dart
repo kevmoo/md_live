@@ -97,49 +97,62 @@ Inline `<!-- fake:two:start src="ignored2.json" -->` here.
       ));
       expect(
         () => parseSentinelSourceSpec('../secret.json'),
-        throwsFormatException,
+        throwsArgumentError,
       );
       expect(
         () => parseSentinelSourceSpec('https://example.com/a.json'),
-        throwsFormatException,
+        throwsArgumentError,
       );
-      expect(
-        () => parseSentinelSourceSpec('/abs/a.json'),
-        throwsFormatException,
-      );
+      expect(() => parseSentinelSourceSpec('/abs/a.json'), throwsArgumentError);
     });
 
-    test(
-      'resolveSentinelJsonSlice and filterSentinelRecords filter slices',
-      () async {
-        final json = {
-          'groups': [
-            {
-              'items': [
-                {'id': 'A', 'status': 'OPEN', 'tier': '1'},
-                {'id': 'B', 'status': 'CLOSED', 'tier': '1'},
-                {'id': 'C', 'status': 'MERGED', 'tier': '2'},
-              ],
-            },
-          ],
-        };
-        final slice = resolveSentinelJsonSlice(
-          json,
-          'groups/items?status=OPEN,MERGED&tier!=2',
-        );
-        expect(slice, [
-          {'id': 'A', 'status': 'OPEN', 'tier': '1'},
-        ]);
+    test('parseSentinelBlocks handles cols="..." before src="..."', () {
+      const md =
+          '<!-- a:one:start cols="x,y" src="d.json#rows" -->\nbody\n'
+          '<!-- a:one:end -->\n'
+          '<!-- b:two:start -->\n<!-- b:two:end -->';
+      final blocks = parseSentinelBlocks(md).toList();
+      expect(blocks, hasLength(2));
+      expect(blocks.first.namespace, 'a');
+      expect(
+        extractSentinelMarkerAttr(blocks.first.attrs, 'src'),
+        'd.json#rows',
+      );
+      expect(extractSentinelMarkerAttr(blocks.first.attrs, 'cols'), 'x,y');
+      expect(parseSentinelBlocks(md, namespace: 'b').single.sentinelId, 'two');
+      expect(extractSentinelJsonSources(md), {'d.json#rows'});
+    });
 
-        final bundled = await bundleSentinelJsonSources(
-          '<!-- ns:id:start src="items.json#groups/items?status=CLOSED" -->',
-          (path) => path == 'items.json' ? jsonEncode(json) : null,
-        );
-        expect(bundled['items.json#groups/items?status=CLOSED'], [
-          {'id': 'B', 'status': 'CLOSED', 'tier': '1'},
-        ]);
-      },
-    );
+    test('resolveSentinelJsonSlice filters slices and bans @md_live', () async {
+      final json = {
+        '@md_live': <String, Object?>{},
+        'groups': [
+          {
+            'items': [
+              {'id': 'A', 'status': 'OPEN', 'tier': '1'},
+              {'id': 'B', 'status': 'CLOSED', 'tier': '1'},
+              {'id': 'C', 'status': 'MERGED', 'tier': '2'},
+            ],
+          },
+        ],
+      };
+      final slice = resolveSentinelJsonSlice(
+        json,
+        'groups/items?status=OPEN,MERGED&tier!=2',
+      );
+      expect(slice, [
+        {'id': 'A', 'status': 'OPEN', 'tier': '1'},
+      ]);
+      expect(resolveSentinelJsonSlice(json, '@md_live'), isNull);
+
+      final bundled = await bundleSentinelJsonSources(
+        '<!-- ns:id:start src="items.json#groups/items?status=CLOSED" -->',
+        (path) => path == 'items.json' ? jsonEncode(json) : null,
+      );
+      expect(bundled['items.json#groups/items?status=CLOSED'], [
+        {'id': 'B', 'status': 'CLOSED', 'tier': '1'},
+      ]);
+    });
   });
 
   group('known_fields', () {
@@ -194,9 +207,11 @@ Inline `<!-- fake:two:start src="ignored2.json" -->` here.
       'validateKnownFields and validateSentinelSources catch schema errors',
       () {
         final badJson = {
-          'field_types': {'status': 'status', 'pr': 'tracker_link'},
-          'table_columns': {
-            'items': ['#index', 'status', 'missing_col'],
+          '@md_live': {
+            'field_types': {'status': 'status', 'pr': 'tracker_link'},
+            'table_columns': {
+              'items': ['#index', 'status', 'missing_col'],
+            },
           },
           'items': [
             {'status': 'UNKNOWN_STATE', 'pr': '[bad](https://github.com)'},
@@ -217,6 +232,66 @@ Inline `<!-- fake:two:start src="ignored2.json" -->` here.
         );
       },
     );
+
+    test('validateKnownFields enforces the @md_live envelope', () {
+      expect(
+        validateKnownFields({
+          'field_types': {'status': 'status'},
+          '@md_live': {'bogus': 1},
+          'items': <Object?>[],
+        }),
+        [
+          'move "field_types" inside "@md_live"',
+          'unknown @md_live key "bogus"',
+        ],
+      );
+    });
+
+    test('validateKnownFields checks field_values allowlists', () {
+      final json = {
+        '@md_live': {
+          'field_values': {
+            'items': {
+              'tier': ['tier1', 'tier2'],
+            },
+          },
+        },
+        'items': [
+          {'tier': 'tier1'},
+          {
+            'tier': ['tier2', 'tier9'],
+          },
+        ],
+      };
+      expect(validateKnownFields(json), [
+        'items[1].tier: invalid value "tier9" (expected one of: tier1, tier2)',
+      ]);
+      expect(
+        validateKnownFields({
+          '@md_live': {
+            'field_values': {
+              'tier': ['a', 'a'],
+            },
+          },
+        }),
+        ['field_values["tier"] contains duplicate value "a"'],
+      );
+    });
+
+    test('countByStatus and KnownStatus.countInFlight aggregate', () {
+      final counts = countByStatus([
+        {'status': 'DRAFT'},
+        {'status': 'IN_REVIEW'},
+        {'status': 'MERGED'},
+        {'status': 'bogus'},
+      ]);
+      expect(counts, {
+        KnownStatus.draft: 1,
+        KnownStatus.inReview: 1,
+        KnownStatus.merged: 1,
+      });
+      expect(KnownStatus.countInFlight(counts), 2);
+    });
   });
 
   group('md_live_core & TableGuardMode', () {
@@ -253,13 +328,15 @@ Inline `<!-- fake:two:start src="ignored2.json" -->` here.
 
     test('projectSentinelMarkdown projects tables and inline live spans', () {
       final json = <String, dynamic>{
-        'field_types': {
-          'slot': 'slot_id',
-          'status': 'status',
-          'pr': 'tracker_link',
-        },
-        'table_columns': {
-          'items': ['#index', 'slot', 'status', 'pr'],
+        '@md_live': {
+          'field_types': {
+            'slot': 'slot_id',
+            'status': 'status',
+            'pr': 'tracker_link',
+          },
+          'table_columns': {
+            'items': ['#index', 'slot', 'status', 'pr'],
+          },
         },
         'items': [
           {
@@ -453,9 +530,11 @@ Count: <span data-live="total">0</span> (`<span data-live="ignored">x</span>`)
       'expectMdLiveClean passes on Prettier-padded tables and fails on drift',
       () async {
         final json = {
-          'field_types': {'slot': 'slot_id', 'status': 'status'},
-          'table_columns': {
-            'runs': ['#index', 'slot', 'status'],
+          '@md_live': {
+            'field_types': {'slot': 'slot_id', 'status': 'status'},
+            'table_columns': {
+              'runs': ['#index', 'slot', 'status'],
+            },
           },
           'runs': [
             {'slot': 'H01', 'status': 'MERGED'},
@@ -500,6 +579,38 @@ Count: <span data-live="total">0</span> (`<span data-live="ignored">x</span>`)
                   ),
                 ),
           ),
+        );
+      },
+    );
+
+    test(
+      'expectMdLiveClean checks live spans in sentinel-free files',
+      () async {
+        await d.dir('spans_pkg', [
+          d.file('NOTES.md', 'Total: <span data-live="total">3</span>\n'),
+        ]).create();
+
+        await expectMdLiveClean(
+          directoryPath: d.path('spans_pkg'),
+          inlineValues: {'total': 3},
+        );
+
+        await expectLater(
+          () => expectMdLiveClean(directoryPath: d.path('spans_pkg')),
+          throwsA(
+            isA<MdLiveVerificationException>().having(
+              (e) => e.message,
+              'message',
+              contains('Unknown data-live key "total"'),
+            ),
+          ),
+        );
+        await expectLater(
+          () => expectMdLiveClean(
+            directoryPath: d.path('spans_pkg'),
+            inlineValues: {'total': 4},
+          ),
+          throwsA(isA<MdLiveVerificationException>()),
         );
       },
     );

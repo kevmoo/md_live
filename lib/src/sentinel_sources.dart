@@ -6,38 +6,85 @@ final RegExp _fencedCodeBlockRegex = RegExp(
   multiLine: true,
 );
 final RegExp _inlineCodeSpanRegex = RegExp(r'`[^`\n]+`');
-final RegExp _sentinelStartSrcRegex = RegExp(
-  r'<!--\s*[a-zA-Z0-9_-]+:[a-zA-Z0-9_:-]+:start\s+[^>]*?\bsrc="([^"]+)"[^>]*?-->',
+const String _sentinelStartCorePattern =
+    r'<!--\s*([a-zA-Z0-9_-]+):([a-zA-Z0-9_:-]+):start(?:\s+([^>]*?))?\s*-->';
+
+final RegExp _sentinelStartMarkerRegex = RegExp(_sentinelStartCorePattern);
+
+/// Matches a paired `<!-- <namespace>:<sentinelId>:start ... -->` ...
+/// `<!-- <namespace>:<sentinelId>:end -->` block.
+///
+/// Capture groups: (1) `namespace`, (2) `sentinelId`, (3) optional attribute
+/// string, (4) inner block body.
+final RegExp sentinelBlockPattern = RegExp(
+  '$_sentinelStartCorePattern([\\s\\S]*?)<!--\\s*\\1:\\2:end\\s*-->',
 );
-final RegExp _sentinelNamespaceRegex = RegExp(
-  r'<!--\s*([a-zA-Z0-9_-]+):[a-zA-Z0-9_:-]+:start\b[^>]*?-->',
-);
+
+/// A matched `<!-- <namespace>:<sentinelId>:start ... -->` ...
+/// `<!-- <namespace>:<sentinelId>:end -->` block.
+typedef ParsedSentinelBlock = ({
+  int start,
+  int end,
+  String namespace,
+  String sentinelId,
+  String attrs,
+  String body,
+});
+
+/// Extracts a trimmed `name="value"` attribute from a sentinel start-marker
+/// attribute string [attrs], or returns `null` if absent or empty.
+String? extractSentinelMarkerAttr(String attrs, String name) {
+  final match = RegExp('\\b$name="([^"]*)"').firstMatch(attrs);
+  final val = match?.group(1)?.trim();
+  return (val == null || val.isEmpty) ? null : val;
+}
+
+/// Parses all paired sentinel blocks in [text], optionally filtering to
+/// [namespace] and [sentinelId].
+Iterable<ParsedSentinelBlock> parseSentinelBlocks(
+  String text, {
+  String? namespace,
+  String? sentinelId,
+}) sync* {
+  for (final m in sentinelBlockPattern.allMatches(text)) {
+    final ns = m.group(1)!;
+    final id = m.group(2)!;
+    if (namespace != null && ns != namespace) continue;
+    if (sentinelId != null && id != sentinelId) continue;
+    yield (
+      start: m.start,
+      end: m.end,
+      namespace: ns,
+      sentinelId: id,
+      attrs: m.group(3)?.trim() ?? '',
+      body: m.group(4)!,
+    );
+  }
+}
+
+String _stripMarkdownCode(String markdown) => markdown
+    .replaceAll(_fencedCodeBlockRegex, '')
+    .replaceAll(_inlineCodeSpanRegex, '');
 
 /// Extracts all unique `src="<file.json>[#<selector>]"` expressions declared on
 /// sentinel start markers in [markdown] (ignoring markers inside fenced code
 /// blocks or inline code spans).
-Set<String> extractSentinelJsonSources(String markdown) {
-  final withoutCode = markdown
-      .replaceAll(_fencedCodeBlockRegex, '')
-      .replaceAll(_inlineCodeSpanRegex, '');
-  return {
-    for (final m in _sentinelStartSrcRegex.allMatches(withoutCode))
-      if (m.group(1)!.trim().isNotEmpty) m.group(1)!.trim(),
-  };
-}
+Set<String> extractSentinelJsonSources(String markdown) => {
+  for (final m in _sentinelStartMarkerRegex.allMatches(
+    _stripMarkdownCode(markdown),
+  ))
+    ?extractSentinelMarkerAttr(m.group(3) ?? '', 'src'),
+};
 
 /// Extracts all unique sentinel `<namespace>` prefixes declared on
 /// `<!-- <namespace>:<id>:start ... -->` markers in [markdown] (ignoring
 /// markers inside fenced code blocks or inline code spans).
-Set<String> extractSentinelNamespaces(String markdown) {
-  final withoutCode = markdown
-      .replaceAll(_fencedCodeBlockRegex, '')
-      .replaceAll(_inlineCodeSpanRegex, '');
-  return {
-    for (final m in _sentinelNamespaceRegex.allMatches(withoutCode))
-      if (m.group(1)!.trim().isNotEmpty) m.group(1)!.trim(),
-  };
-}
+Set<String> extractSentinelNamespaces(String markdown) => {
+  for (final m in _sentinelStartMarkerRegex.allMatches(
+    _stripMarkdownCode(markdown),
+  ))
+    if (m.group(1)!.trim().isNotEmpty) m.group(1)!.trim(),
+};
 
 /// Parses a sentinel `src="<filePath>[#<selector>]"` expression using [Uri] and
 /// validates that `filePath` is a safe relative path without parent traversal
@@ -54,9 +101,10 @@ Set<String> extractSentinelNamespaces(String markdown) {
       filePath.startsWith(r'\') ||
       trimmed.split('#').first.split('/').contains('..') ||
       filePath.split(r'\').contains('..')) {
-    throw FormatException(
-      'Sentinel src must be a relative file path without ".." traversal.',
+    throw ArgumentError.value(
       src,
+      'src',
+      'Sentinel src must be a relative file path without ".." traversal.',
     );
   }
   final selector = uri.hasFragment ? uri.fragment.trim() : null;
@@ -68,21 +116,20 @@ Set<String> extractSentinelNamespaces(String markdown) {
 
 Object? _stepPropertyOnCurrent(Object? current, String key) {
   if (key.isEmpty) return current;
+  if (key.startsWith('@')) return null;
   if (current is Map) return current[key];
-  if (current is List) {
-    final collected = <Object?>[];
-    for (final item in current) {
-      if (item is! Map || !item.containsKey(key)) continue;
-      final val = item[key];
-      if (val is List) {
-        collected.addAll(val);
-      } else {
-        collected.add(val);
-      }
+  if (current is! List) return null;
+  final collected = <Object?>[];
+  for (final item in current) {
+    if (item is! Map || !item.containsKey(key)) continue;
+    final val = item[key];
+    if (val is List) {
+      collected.addAll(val);
+    } else {
+      collected.add(val);
     }
-    return collected;
   }
-  return null;
+  return collected;
 }
 
 typedef _FilterClause = ({String field, Set<String> values, bool isNegated});
@@ -128,26 +175,6 @@ Object? _filterListByField(Object? current, String filterExpr) {
   return [
     for (final item in current)
       if (item is Map && clauses.every((c) => _matchesClause(item, c))) item,
-  ];
-}
-
-/// Filters [records] using a sentinel query expression (`field=v1,v2&other!=v3`
-/// parsed via `Uri(query: filterExpr).queryParametersAll`).
-List<Map<String, dynamic>> filterSentinelRecords(
-  List<Map<String, dynamic>> records,
-  String filterExpr,
-) {
-  final clauses = _parseFilterClauses(filterExpr.trim());
-  if (clauses == null) {
-    throw ArgumentError.value(
-      filterExpr,
-      'filterExpr',
-      'Invalid sentinel filter expression.',
-    );
-  }
-  return [
-    for (final item in records)
-      if (clauses.every((c) => _matchesClause(item, c))) item,
   ];
 }
 

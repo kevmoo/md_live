@@ -35,14 +35,11 @@ String _displayPath(String rootDir, String fullPath) =>
     ? p.relative(fullPath, from: rootDir)
     : fullPath;
 
-bool _hasLiveMarkers(String markdown, {required bool includeLiveSpans}) =>
+bool _hasLiveMarkers(String markdown) =>
     extractSentinelNamespaces(markdown).isNotEmpty ||
-    (includeLiveSpans && extractLiveSpanValues(markdown).isNotEmpty);
+    extractLiveSpanValues(markdown).isNotEmpty;
 
-List<String> _discoverSentinelMarkdownFiles(
-  String rootDir, {
-  required bool includeLiveSpans,
-}) {
+List<String> _discoverSentinelMarkdownFiles(String rootDir) {
   final dir = Directory(rootDir);
   if (!dir.existsSync()) return const [];
   final discovered = <String>[];
@@ -58,10 +55,7 @@ List<String> _discoverSentinelMarkdownFiles(
         queue.add(entity);
       } else if (entity is File &&
           name.endsWith('.md') &&
-          _hasLiveMarkers(
-            entity.readAsStringSync(),
-            includeLiveSpans: includeLiveSpans,
-          )) {
+          _hasLiveMarkers(entity.readAsStringSync())) {
         discovered.add(p.normalize(entity.path));
       }
     }
@@ -116,7 +110,6 @@ typedef _VerifyConfig = ({
   String rootDir,
   Set<String> namespaces,
   TableGuardMode guardMode,
-  Map<String, SentinelRowBuilder> rowBuilders,
   Map<String, Map<String, String Function(Map<String, dynamic> row)>>
   cellFormatters,
   Map<String, List<List<String>>> customTableRows,
@@ -124,28 +117,69 @@ typedef _VerifyConfig = ({
   Set<String> continuousIndexCollections,
 });
 
-({String? failureMessage, Set<String> jsonFiles}) _checkMarkdownFile(
+String? _verifyProjectedIdempotency(
+  String projected,
   String mdPath,
+  String display,
   _VerifyConfig config,
 ) {
+  final baseDir = File(mdPath).parent.path;
+  final jsonByPath = <String, Map<String, dynamic>>{};
+  for (final src in extractSentinelJsonSources(projected)) {
+    final filePath = parseSentinelSourceSpec(src).filePath;
+    if (jsonByPath.containsKey(filePath)) continue;
+    final file = File(p.join(baseDir, filePath));
+    if (!file.existsSync()) continue;
+    if (jsonDecode(file.readAsStringSync())
+        case final Map<dynamic, dynamic> m) {
+      jsonByPath[filePath] = Map<String, dynamic>.from(m);
+    }
+  }
+  final activeNamespaces = config.namespaces.isNotEmpty
+      ? config.namespaces
+      : extractSentinelNamespaces(projected);
+  var reprojected = projected;
+  if (activeNamespaces.isEmpty) {
+    reprojected = projectInlineLiveSpans(reprojected, config.inlineValues);
+  } else {
+    for (final ns in activeNamespaces) {
+      reprojected = projectSentinelMarkdown(
+        reprojected,
+        namespace: ns,
+        jsonByPath: jsonByPath,
+        cellFormatters: config.cellFormatters,
+        customTableRows: config.customTableRows,
+        inlineValues: config.inlineValues,
+        continuousIndexCollections: config.continuousIndexCollections,
+        guardMode: config.guardMode,
+      );
+    }
+  }
+  return reprojected.replaceAll('\r\n', '\n') ==
+          projected.replaceAll('\r\n', '\n')
+      ? null
+      : '"$display" projection is not idempotent.';
+}
+
+({String? failureMessage, Set<String> jsonFiles, int liveSpanCount})
+_checkMarkdownFile(String mdPath, _VerifyConfig config) {
   final display = _displayPath(config.rootDir, mdPath);
   final file = File(mdPath);
   if (!file.existsSync()) {
     return (
       failureMessage: 'Markdown file "$display" does not exist at "$mdPath".',
       jsonFiles: const {},
+      liveSpanCount: 0,
     );
   }
   final existing = file.readAsStringSync();
-  if (!_hasLiveMarkers(
-    existing,
-    includeLiveSpans: config.inlineValues.isNotEmpty,
-  )) {
+  if (!_hasLiveMarkers(existing)) {
     return (
       failureMessage:
           'Markdown file "$display" contains no sentinel blocks '
-          '(<!-- ns:id:start ... -->).',
+          '(<!-- ns:id:start ... -->) or <span data-live> spans.',
       jsonFiles: const {},
+      liveSpanCount: 0,
     );
   }
 
@@ -153,14 +187,17 @@ typedef _VerifyConfig = ({
     mdPath,
     namespaces: config.namespaces,
     guardMode: config.guardMode,
-    rowBuilders: config.rowBuilders,
     cellFormatters: config.cellFormatters,
     customTableRows: config.customTableRows,
     inlineValues: config.inlineValues,
     continuousIndexCollections: config.continuousIndexCollections,
   );
   if (errors.isNotEmpty) {
-    return (failureMessage: errors.join('\n'), jsonFiles: const {});
+    return (
+      failureMessage: errors.join('\n'),
+      jsonFiles: const {},
+      liveSpanCount: 0,
+    );
   }
 
   final jsonFiles = <String>{
@@ -172,21 +209,35 @@ typedef _VerifyConfig = ({
 
   final normExisting = normalizeMarkdownTableFormatting(existing);
   final normProjected = normalizeMarkdownTableFormatting(projected);
-  if (normExisting == normProjected) {
-    return (failureMessage: null, jsonFiles: jsonFiles);
+  if (normExisting != normProjected) {
+    final diff = _buildLineDiff(
+      LineSplitter.split(normExisting).toList(),
+      LineSplitter.split(normProjected).toList(),
+    );
+    return (
+      failureMessage:
+          '"$display" is out of sync with its JSON sources:\n\n'
+          '$diff\n\n'
+          'To update, run:\n'
+          '  dart run md_live sync $display',
+      jsonFiles: jsonFiles,
+      liveSpanCount: 0,
+    );
   }
 
-  final diff = _buildLineDiff(
-    LineSplitter.split(normExisting).toList(),
-    LineSplitter.split(normProjected).toList(),
+  final idempotencyError = _verifyProjectedIdempotency(
+    projected,
+    mdPath,
+    display,
+    config,
   );
+  final count = config.inlineValues.isNotEmpty
+      ? extractLiveSpanValues(existing).length
+      : 0;
   return (
-    failureMessage:
-        '"$display" is out of sync with its JSON sources:\n\n'
-        '$diff\n\n'
-        'To update, run:\n'
-        '  dart run md_live sync $display',
+    failureMessage: idempotencyError,
     jsonFiles: jsonFiles,
+    liveSpanCount: count,
   );
 }
 
@@ -208,12 +259,27 @@ String? _checkCompactJsonFile(String jsonPath, String rootDir) {
       '  dart run md_live compact-json $display';
 }
 
-/// Verifies that Markdown files containing `md-live` sentinel blocks match
-/// their JSON sources on disk.
+void _checkCompactJsonFiles(
+  Set<String> jsonPaths,
+  String rootDir,
+  List<String> failedFiles,
+  List<String> messages,
+) {
+  for (final jsonPath in jsonPaths.toList()..sort()) {
+    final err = _checkCompactJsonFile(jsonPath, rootDir);
+    if (err != null) {
+      failedFiles.add(_displayPath(rootDir, jsonPath));
+      messages.add(err);
+    }
+  }
+}
+
+/// Verifies that Markdown files containing `md-live` sentinel blocks or
+/// `<span data-live>` spans match their JSON sources on disk.
 ///
 /// When [markdownFiles] is omitted, recursively discovers all `.md` files under
 /// [directoryPath] (defaults to [Directory.current]) that declare at least one
-/// `<!-- <ns>:<id>:start ... -->` sentinel block.
+/// `<!-- <ns>:<id>:start ... -->` sentinel block or `<span data-live>` span.
 ///
 /// Throws an [MdLiveVerificationException] if no sentinel Markdown files are
 /// found, if any sentinel source fails schema validation, or if any Markdown
@@ -235,7 +301,6 @@ Future<void> expectMdLiveClean({
   List<String>? markdownFiles,
   Set<String> namespaces = const {},
   TableGuardMode guardMode = TableGuardMode.none,
-  Map<String, SentinelRowBuilder> rowBuilders = const {},
   Map<String, Map<String, String Function(Map<String, dynamic> row)>>
       cellFormatters =
       const {},
@@ -249,10 +314,7 @@ Future<void> expectMdLiveClean({
   );
   final targetPaths = markdownFiles != null
       ? [for (final raw in markdownFiles) p.normalize(p.join(rootDir, raw))]
-      : _discoverSentinelMarkdownFiles(
-          rootDir,
-          includeLiveSpans: inlineValues.isNotEmpty,
-        );
+      : _discoverSentinelMarkdownFiles(rootDir);
 
   if (targetPaths.isEmpty) {
     throw MdLiveVerificationException(
@@ -267,7 +329,6 @@ Future<void> expectMdLiveClean({
     rootDir: rootDir,
     namespaces: namespaces,
     guardMode: guardMode,
-    rowBuilders: rowBuilders,
     cellFormatters: cellFormatters,
     customTableRows: customTableRows,
     inlineValues: inlineValues,
@@ -276,25 +337,35 @@ Future<void> expectMdLiveClean({
   final failedFiles = <String>[];
   final messages = <String>[];
   final referencedJsonFiles = <String>{};
+  var totalLiveSpans = 0;
 
   for (final mdPath in targetPaths) {
-    final (:failureMessage, :jsonFiles) = _checkMarkdownFile(mdPath, config);
+    final (:failureMessage, :jsonFiles, :liveSpanCount) = _checkMarkdownFile(
+      mdPath,
+      config,
+    );
     referencedJsonFiles.addAll(jsonFiles);
     if (failureMessage != null) {
       failedFiles.add(_displayPath(rootDir, mdPath));
       messages.add(failureMessage);
+    } else {
+      totalLiveSpans += liveSpanCount;
     }
   }
 
+  if (messages.isEmpty && inlineValues.isNotEmpty && totalLiveSpans == 0) {
+    final displayTargets = [
+      for (final mdPath in targetPaths) _displayPath(rootDir, mdPath),
+    ];
+    failedFiles.addAll(displayTargets);
+    messages.add(
+      'inlineValues was provided, but no <span data-live="..."> spans were '
+      'found across ${displayTargets.join(', ')}.',
+    );
+  }
+
   if (checkCompactJson) {
-    final sortedJson = referencedJsonFiles.toList()..sort();
-    for (final jsonPath in sortedJson) {
-      final err = _checkCompactJsonFile(jsonPath, rootDir);
-      if (err != null) {
-        failedFiles.add(_displayPath(rootDir, jsonPath));
-        messages.add(err);
-      }
-    }
+    _checkCompactJsonFiles(referencedJsonFiles, rootDir, failedFiles, messages);
   }
 
   if (messages.isNotEmpty) {

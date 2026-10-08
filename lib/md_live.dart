@@ -5,25 +5,28 @@ export 'src/io.dart'
         projectMarkdownFileFromDisk,
         syncOrVerifyGeneratedFiles,
         syncRemoteGithubPrStatuses;
-export 'src/known_fields.dart'
+export 'src/known_field_type.dart'
     show
         KnownFieldType,
         KnownStatus,
         ParsedTrackerLink,
+        countByStatus,
         enumByKey,
-        resolveCollectionFieldTypes,
         tryMatchKnownStatusRank,
-        tryParseTrackerLink,
+        tryParseTrackerLink;
+export 'src/known_fields.dart'
+    show
+        mdLiveEnvelope,
+        mdLiveEnvelopeKey,
+        resolveCollectionFieldTypes,
         validateKnownFields,
         validateSentinelSources;
 export 'src/md_live_core.dart'
     show
         ParsedMarkdownTableHeader,
-        SentinelRowBuilder,
         TableGuardMode,
         escapeMarkdownTableCell,
         extractLiveSpanValues,
-        extractSentinelBlockBody,
         formatCommaInt,
         formatCommaNum,
         formatSpeedupRatio,
@@ -41,10 +44,13 @@ export 'src/md_live_core.dart'
         resolveCollectionTableColumns;
 export 'src/sentinel_sources.dart'
     show
+        ParsedSentinelBlock,
         bundleSentinelJsonSources,
         extractSentinelJsonSources,
+        extractSentinelMarkerAttr,
         extractSentinelNamespaces,
-        filterSentinelRecords,
+        parseSentinelBlocks,
         parseSentinelSourceSpec,
-        resolveSentinelJsonSlice;
+        resolveSentinelJsonSlice,
+        sentinelBlockPattern;
 export 'src/verify.dart' show MdLiveVerificationException, expectMdLiveClean;

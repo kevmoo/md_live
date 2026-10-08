@@ -1,257 +1,7 @@
 import 'dart:convert';
 
+import 'known_field_type.dart';
 import 'sentinel_sources.dart';
-
-/// Resolves an enum value in [values] whose [keyOf] matches [key], or throws
-/// an [ArgumentError] naming [typeName].
-T enumByKey<T extends Enum>(
-  List<T> values,
-  String key,
-  String Function(T) keyOf,
-  String typeName,
-) {
-  for (final value in values) {
-    if (keyOf(value) == key) return value;
-  }
-  throw ArgumentError.value(key, 'key', 'Unknown $typeName');
-}
-
-/// Canonical status values for [KnownFieldType.status], ordered by lifecycle
-/// stage from earliest (`DRAFT`) to terminal (`CLOSED_UNMERGED`).
-enum KnownStatus {
-  draft('DRAFT', '📝 **DRAFT**', 1),
-  open('OPEN', '🟢 **OPEN**', 2),
-  inReview('IN_REVIEW', '🟡 **IN REVIEW**', 3),
-  merged('MERGED', '☑️ **MERGED**', 4),
-  fixed('FIXED', '✅ **FIXED**', 5),
-  verifiedFixed('VERIFIED_FIXED', '✅ **VERIFIED FIXED**', 6),
-  closed('CLOSED', '⚪ **CLOSED**', 7),
-  closedUnmerged('CLOSED_UNMERGED', '❌ **CLOSED UNMERGED**', 8);
-
-  const KnownStatus(this.jsonKey, this.markdownBadge, this.lifecycleRank);
-
-  final String jsonKey;
-  final String markdownBadge;
-  final int lifecycleRank;
-
-  static KnownStatus? tryFromKey(String key) {
-    for (final value in values) {
-      if (value.jsonKey == key) return value;
-    }
-    return null;
-  }
-
-  static KnownStatus fromKey(String key) =>
-      enumByKey(values, key, (v) => v.jsonKey, 'KnownStatus');
-
-  /// Maps a GitHub `gh pr view --json state,isDraft` state (`"MERGED"`,
-  /// `"OPEN"`, `"CLOSED"`) and [isDraft] flag to the canonical [KnownStatus].
-  static KnownStatus fromGithubState(String state, {required bool isDraft}) =>
-      switch (state.trim().toUpperCase()) {
-        'MERGED' => KnownStatus.merged,
-        'OPEN' when isDraft => KnownStatus.draft,
-        'OPEN' => KnownStatus.inReview,
-        'CLOSED' => KnownStatus.closedUnmerged,
-        final upper => KnownStatus.fromKey(upper),
-      };
-}
-
-final RegExp _nonAlphaNumericPattern = RegExp('[^A-Z0-9]+');
-final RegExp _edgeUnderscorePattern = RegExp(r'^_+|_+$');
-
-/// Matches a raw status key or rendered status badge cell (such as
-/// `"☑️ MERGED"` or `"🟡 IN REVIEW"`) to its [KnownStatus.lifecycleRank], or
-/// returns `null` if [cellText] is not a recognized status.
-int? tryMatchKnownStatusRank(String cellText) {
-  final normalized = cellText
-      .toUpperCase()
-      .replaceAll(_nonAlphaNumericPattern, '_')
-      .replaceAll(_edgeUnderscorePattern, '');
-  return KnownStatus.tryFromKey(normalized)?.lifecycleRank;
-}
-
-/// Structured components of a validated [KnownFieldType.trackerLink] value.
-typedef ParsedTrackerLink = ({String githubRepo, String kind, int number});
-
-/// Parses a canonical GitHub PR/Issue URL
-/// (`https://github.com/<owner>/<repo>/(pull|issues)/<num>`) using
-/// [Uri.tryParse] and Dart 3 list patterns, or returns `null` if [raw] is not a
-/// canonical GitHub tracker link.
-ParsedTrackerLink? tryParseTrackerLink(String raw) {
-  final uri = Uri.tryParse(raw);
-  if (uri == null || uri.toString() != raw) return null;
-  final (String repo, String kind, String numStr) = switch (uri) {
-    Uri(
-      scheme: 'https',
-      host: 'github.com',
-      hasPort: false,
-      userInfo: '',
-      hasQuery: false,
-      hasFragment: false,
-      pathSegments: [
-        final owner && != '',
-        final name && != '',
-        final kind && ('pull' || 'issues'),
-        final numStr,
-      ],
-    )
-        when !owner.contains('%') && !name.contains('%') =>
-      ('$owner/$name', kind, numStr),
-    _ => ('', '', ''),
-  };
-  if (kind.isEmpty) return null;
-  final number = int.tryParse(numStr);
-  if (number == null || number <= 0 || '$number' != numStr) return null;
-  return (githubRepo: repo, kind: kind, number: number);
-}
-
-final RegExp _slotIdDisallowedPattern = RegExp(r'[*<>\[\]]');
-
-String? _validateStringOrNonEmptyList(
-  Object? value,
-  String? Function(Object? item) validateItem,
-  String typeName,
-) {
-  if (value is String) return validateItem(value);
-  if (value is List && value.isNotEmpty) {
-    for (final item in value) {
-      final err = validateItem(item);
-      if (err != null) return err;
-    }
-    return null;
-  }
-  return '$typeName must be a non-empty string or list of strings, '
-      'got "$value"';
-}
-
-String? _validateSingleTrackerLink(Object? item) {
-  if (item is! String || item.trim().isEmpty) {
-    return 'tracker_link must be a non-empty string URL, got "$item"';
-  }
-  if (item.contains('[') || item.contains(']')) {
-    return 'tracker_link "$item" must be a raw URL without '
-        'Markdown "[...](...)" syntax';
-  }
-  if (tryParseTrackerLink(item) != null) {
-    return null;
-  }
-  return 'invalid tracker_link "$item" (expected '
-      'https://github.com/<owner>/<repo>/(pull|issues)/<num>)';
-}
-
-({String markdown, String? repo}) _formatSingleTrackerLink(
-  String raw, {
-  String? previousRepo,
-}) {
-  if (tryParseTrackerLink(raw) case (
-    githubRepo: final repo,
-    kind: _,
-    :final number,
-  )) {
-    final label = (previousRepo == repo) ? '#$number' : '$repo#$number';
-    return (markdown: '[$label]($raw)', repo: repo);
-  }
-  return (markdown: raw, repo: null);
-}
-
-String _formatTrackerLinkMarkdown(Object? value) {
-  if (value is String) {
-    return _formatSingleTrackerLink(value).markdown;
-  }
-  if (value is List) {
-    final parts = <String>[];
-    String? lastRepo;
-    for (final item in value) {
-      final formatted = _formatSingleTrackerLink(
-        item as String,
-        previousRepo: lastRepo,
-      );
-      parts.add(formatted.markdown);
-      lastRepo = formatted.repo;
-    }
-    return parts.join(', ');
-  }
-  throw ArgumentError.value(value, 'value', 'Invalid tracker_link value');
-}
-
-String? _validateSlotIdValue(Object? value) {
-  if (value is! String || value.trim().isEmpty) {
-    return 'slot_id must be a non-empty string, got "$value"';
-  }
-  if (_slotIdDisallowedPattern.hasMatch(value)) {
-    return 'slot_id "$value" must not contain Markdown "**", brackets, '
-        'or HTML tags';
-  }
-  return null;
-}
-
-String? _validateSingleCodeSpan(Object? item) {
-  if (item is! String || item.trim().isEmpty || item.contains('`')) {
-    return 'code_span must be a non-empty string without backticks, '
-        'got "$item"';
-  }
-  return null;
-}
-
-String _formatCodeSpanMarkdown(Object? value) {
-  if (value is String) return '`${value.trim()}`';
-  if (value is List) {
-    return value.map((e) => '`${(e as String).trim()}`').join(', ');
-  }
-  throw ArgumentError.value(value, 'value', 'Invalid code_span value');
-}
-
-/// Known field types for declarative `md-live` JSON schemas
-/// (`"field_types"`), providing (a) raw value validation and (b) automatic
-/// GFM Markdown cell formatting.
-enum KnownFieldType {
-  status('status'),
-  trackerLink('tracker_link'),
-  slotId('slot_id'),
-  codeSpan('code_span');
-
-  const KnownFieldType(this.jsonKey);
-
-  final String jsonKey;
-
-  static KnownFieldType? tryFromKey(String key) {
-    for (final value in values) {
-      if (value.jsonKey == key) return value;
-    }
-    return null;
-  }
-
-  /// Validates a raw JSON field [value], returning `null` if valid or a
-  /// human-readable error message if invalid.
-  String? validateValue(Object? value) => switch (this) {
-    KnownFieldType.status =>
-      (value is String && KnownStatus.tryFromKey(value) != null)
-          ? null
-          : 'invalid status "$value" '
-                '(expected one of: '
-                '${KnownStatus.values.map((s) => s.jsonKey).join(', ')})',
-    KnownFieldType.trackerLink => _validateStringOrNonEmptyList(
-      value,
-      _validateSingleTrackerLink,
-      'tracker_link',
-    ),
-    KnownFieldType.slotId => _validateSlotIdValue(value),
-    KnownFieldType.codeSpan => _validateStringOrNonEmptyList(
-      value,
-      _validateSingleCodeSpan,
-      'code_span',
-    ),
-  };
-
-  /// Projects a validated raw JSON field [value] into its canonical GFM
-  /// Markdown cell representation.
-  String formatMarkdown(Object? value) => switch (this) {
-    KnownFieldType.status => KnownStatus.fromKey(value as String).markdownBadge,
-    KnownFieldType.trackerLink => _formatTrackerLinkMarkdown(value),
-    KnownFieldType.slotId => '**${(value as String).trim()}**',
-    KnownFieldType.codeSpan => _formatCodeSpanMarkdown(value),
-  };
-}
 
 Map<String, KnownFieldType> _extractFlatFieldTypes(
   Map<dynamic, dynamic> source,
@@ -285,15 +35,64 @@ Map<String, KnownFieldType> _extractDottedFieldTypes(
   return result;
 }
 
+Map<String, Set<String>> _extractFlatFieldValues(
+  Map<dynamic, dynamic> source,
+) => {
+  for (final entry in source.entries)
+    if (entry case MapEntry(
+      key: final String k,
+      value: final List<dynamic> v,
+    ) when !k.contains('.'))
+      k: v.whereType<String>().toSet(),
+};
+
+Map<String, Set<String>> _extractDottedFieldValues(
+  Map<dynamic, dynamic> source,
+  String collectionKey,
+) {
+  final dotPrefix = '$collectionKey.';
+  final result = <String, Set<String>>{};
+  for (final entry in source.entries) {
+    if (entry case MapEntry(
+      key: final String k,
+      value: final List<dynamic> v,
+    ) when k.startsWith(dotPrefix)) {
+      final field = k.substring(dotPrefix.length);
+      if (field.isNotEmpty && !field.contains('.')) {
+        result[field] = v.whereType<String>().toSet();
+      }
+    }
+  }
+  return result;
+}
+
+/// Reserved root JSON key holding `md-live` schema and projection directives
+/// (`field_types`, `field_values`, `table_columns`).
+const String mdLiveEnvelopeKey = '@md_live';
+
+const Set<String> _knownMdLiveEnvelopeKeys = {
+  'field_types',
+  'field_values',
+  'table_columns',
+};
+
+/// Extracts the `@md_live` directive map from [rootJson], or `null` if absent
+/// or not a map.
+Map<dynamic, dynamic>? mdLiveEnvelope(Map<String, dynamic> rootJson) =>
+    switch (rootJson[mdLiveEnvelopeKey]) {
+      final Map<dynamic, dynamic> m => m,
+      _ => null,
+    };
+
 /// Resolves the `field -> KnownFieldType` map for [collectionKey] from
-/// `rootJson['field_types']`, merging any top-level default field types with
-/// collection-scoped overrides (supporting both `"collection.field": "type"`
-/// and `"collection": {"field": "type"}`).
+/// `rootJson['@md_live']['field_types']`, merging any top-level default field
+/// types with collection-scoped overrides (supporting both
+/// `"collection.field": "type"` and `"collection": {"field": "type"}`).
 Map<String, KnownFieldType> resolveCollectionFieldTypes(
   Map<String, dynamic> rootJson, [
   String? collectionKey,
 ]) {
-  final rawFieldTypes = rootJson['field_types'];
+  final rawFieldTypes = mdLiveEnvelope(rootJson)?['field_types'];
   if (rawFieldTypes is! Map) return const {};
   final resolved = _extractFlatFieldTypes(rawFieldTypes);
   if (collectionKey == null) return resolved;
@@ -301,6 +100,21 @@ Map<String, KnownFieldType> resolveCollectionFieldTypes(
   final scoped = rawFieldTypes[collectionKey];
   if (scoped is Map) {
     resolved.addAll(_extractFlatFieldTypes(scoped));
+  }
+  return resolved;
+}
+
+Map<String, Set<String>> _resolveCollectionFieldValues(
+  Map<String, dynamic> rootJson,
+  String collectionKey,
+) {
+  final rawFieldValues = mdLiveEnvelope(rootJson)?['field_values'];
+  if (rawFieldValues is! Map) return const {};
+  final resolved = _extractFlatFieldValues(rawFieldValues)
+    ..addAll(_extractDottedFieldValues(rawFieldValues, collectionKey));
+  final scoped = rawFieldValues[collectionKey];
+  if (scoped is Map) {
+    resolved.addAll(_extractFlatFieldValues(scoped));
   }
   return resolved;
 }
@@ -319,6 +133,41 @@ List<String> _validateCollectionKnownFields(
       final field = entry.key;
       if (!item.containsKey(field)) continue;
       final err = entry.value.validateValue(item[field]);
+      if (err != null) {
+        errors.add('$prefix$collectionKey[$i].$field: $err');
+      }
+    }
+  }
+  return errors;
+}
+
+String? _validateValueAgainstAllowed(Object? value, Set<String> allowed) {
+  if (value is String && allowed.contains(value)) return null;
+  if (value is List && value.isNotEmpty) {
+    for (final item in value) {
+      if (item is! String || !allowed.contains(item)) {
+        return 'invalid value "$item" (expected one of: ${allowed.join(', ')})';
+      }
+    }
+    return null;
+  }
+  return 'invalid value "$value" (expected one of: ${allowed.join(', ')})';
+}
+
+List<String> _validateCollectionFieldValues(
+  String collectionKey,
+  List<Object?> items,
+  Map<String, Set<String>> fieldValues,
+  String prefix,
+) {
+  final errors = <String>[];
+  for (var i = 0; i < items.length; i++) {
+    final item = items[i];
+    if (item is! Map) continue;
+    for (final entry in fieldValues.entries) {
+      final field = entry.key;
+      if (!item.containsKey(field)) continue;
+      final err = _validateValueAgainstAllowed(item[field], entry.value);
       if (err != null) {
         errors.add('$prefix$collectionKey[$i].$field: $err');
       }
@@ -385,10 +234,14 @@ String? _validateStringFieldTypeEntry(
 }
 
 List<String> _validateFieldTypesDeclaration(
-  Map<dynamic, dynamic> rawFieldTypes,
+  Object? rawFieldTypes,
   Map<String, dynamic> rootJson,
   String prefix,
 ) {
+  if (rawFieldTypes == null) return const [];
+  if (rawFieldTypes is! Map) {
+    return ['${prefix}field_types must be a JSON object map'];
+  }
   final errors = <String>[];
   for (final entry in rawFieldTypes.entries) {
     final key = entry.key;
@@ -400,6 +253,106 @@ List<String> _validateFieldTypesDeclaration(
       errors.addAll(_validateScopedFieldTypesMap(key, val, rootJson, prefix));
     } else {
       errors.add('${prefix}invalid field_types entry for "$key"');
+    }
+  }
+  return errors;
+}
+
+String? _validateAllowedValuesList(
+  Object? rawValues,
+  String targetLabel,
+  String prefix,
+) {
+  final label = '${prefix}field_values["$targetLabel"]';
+  final shapeError = '$label must be a non-empty list of trimmed strings';
+  if (rawValues is! List || rawValues.isEmpty) return shapeError;
+  final seen = <String>{};
+  for (final item in rawValues) {
+    if (item is! String || item.trim().isEmpty || item.trim() != item) {
+      return shapeError;
+    }
+    if (!seen.add(item)) {
+      return '$label contains duplicate value "$item"';
+    }
+  }
+  return null;
+}
+
+List<String> _validateScopedFieldValuesMap(
+  Object? parentKey,
+  Map<dynamic, dynamic> scoped,
+  Map<String, dynamic> rootJson,
+  String prefix,
+) {
+  if (parentKey is! String ||
+      parentKey.isEmpty ||
+      parentKey.contains('.') ||
+      rootJson[parentKey] is! List) {
+    return ['${prefix}unknown collection "$parentKey" in field_values'];
+  }
+  final errors = <String>[];
+  for (final sub in scoped.entries) {
+    final subKey = sub.key;
+    if (subKey is! String || subKey.isEmpty || subKey.contains('.')) {
+      errors.add('${prefix}invalid field_values key "$parentKey.$subKey"');
+      continue;
+    }
+    final err = _validateAllowedValuesList(
+      sub.value,
+      '$parentKey.$subKey',
+      prefix,
+    );
+    if (err != null) errors.add(err);
+  }
+  return errors;
+}
+
+String? _validateFlatOrDottedFieldValuesEntry(
+  Object? key,
+  List<Object?> val,
+  Map<String, dynamic> rootJson,
+  String prefix,
+) {
+  if (key is! String || key.isEmpty) {
+    return '${prefix}invalid field_values key "$key"';
+  }
+  if (key.contains('.')) {
+    final parts = key.split('.');
+    if (parts.length != 2 ||
+        parts[0].isEmpty ||
+        parts[1].isEmpty ||
+        rootJson[parts[0]] is! List) {
+      return '${prefix}unknown collection in field_values key "$key"';
+    }
+  }
+  return _validateAllowedValuesList(val, key, prefix);
+}
+
+List<String> _validateFieldValuesDeclaration(
+  Object? rawFieldValues,
+  Map<String, dynamic> rootJson,
+  String prefix,
+) {
+  if (rawFieldValues == null) return const [];
+  if (rawFieldValues is! Map) {
+    return ['${prefix}field_values must be a JSON object map'];
+  }
+  final errors = <String>[];
+  for (final entry in rawFieldValues.entries) {
+    final key = entry.key;
+    final val = entry.value;
+    if (val is List) {
+      final err = _validateFlatOrDottedFieldValuesEntry(
+        key,
+        val,
+        rootJson,
+        prefix,
+      );
+      if (err != null) errors.add(err);
+    } else if (val is Map) {
+      errors.addAll(_validateScopedFieldValuesMap(key, val, rootJson, prefix));
+    } else {
+      errors.add('${prefix}invalid field_values entry for "$key"');
     }
   }
   return errors;
@@ -417,10 +370,8 @@ List<String> _validateSingleTableColumnsEntry(
   if (colVal is! List ||
       colVal.isEmpty ||
       !colVal.every((e) => e is String && e.trim().isNotEmpty)) {
-    final msg =
-        '${prefix}table_columns["$colKey"] must be a non-empty '
-        'list of column keys';
-    return [msg];
+    final label = '${prefix}table_columns["$colKey"]';
+    return ['$label must be a non-empty list of column keys'];
   }
   final cols = colVal.cast<String>();
   final items = rootJson[colKey] as List<Object?>;
@@ -457,50 +408,78 @@ List<String> _validateTableColumnsDeclaration(
   ];
 }
 
-/// Validates `rootJson['field_types']` and `rootJson['table_columns']`
-/// declarations and checks every record in matching collections against its
-/// declared [KnownFieldType] rules.
+List<String> _validateMdLiveEnvelope(
+  Map<String, dynamic> rootJson,
+  String prefix,
+) {
+  final errors = <String>[
+    for (final key in _knownMdLiveEnvelopeKeys)
+      if (rootJson.containsKey(key))
+        '${prefix}move "$key" inside "$mdLiveEnvelopeKey"',
+  ];
+  if (!rootJson.containsKey(mdLiveEnvelopeKey)) return errors;
+  final rawEnvelope = rootJson[mdLiveEnvelopeKey];
+  if (rawEnvelope is! Map) {
+    return [...errors, '$prefix$mdLiveEnvelopeKey must be a JSON object map'];
+  }
+  for (final key in rawEnvelope.keys) {
+    if (key is! String || !_knownMdLiveEnvelopeKeys.contains(key)) {
+      errors.add('${prefix}unknown $mdLiveEnvelopeKey key "$key"');
+    }
+  }
+  return errors;
+}
+
+/// Validates `rootJson['@md_live']` (`field_types`, `field_values`, and
+/// `table_columns` declarations, unknown `@md_live` keys, and legacy top-level
+/// directives) and checks every record in matching collections against its
+/// declared [KnownFieldType] and allowed-value rules.
 List<String> validateKnownFields(
   Map<String, dynamic> rootJson, {
   String prefix = '',
 }) {
-  final tableColErrors = _validateTableColumnsDeclaration(
-    rootJson['table_columns'],
-    rootJson,
-    prefix,
-  );
-  final rawFieldTypes = rootJson['field_types'];
-  if (rawFieldTypes == null) return tableColErrors;
-  if (rawFieldTypes is! Map) {
-    return [
-      ...tableColErrors,
-      '${prefix}field_types must be a JSON object map',
-    ];
-  }
-  final declErrors = _validateFieldTypesDeclaration(
-    rawFieldTypes,
-    rootJson,
-    prefix,
-  );
-  if (declErrors.isNotEmpty) return [...tableColErrors, ...declErrors];
+  final envErrors = _validateMdLiveEnvelope(rootJson, prefix);
+  final envelope = mdLiveEnvelope(rootJson);
+  if (envelope == null) return envErrors;
 
-  final errors = <String>[...tableColErrors];
+  final tableColErrors = _validateTableColumnsDeclaration(
+    envelope['table_columns'],
+    rootJson,
+    prefix,
+  );
+  final typeDeclErrors = _validateFieldTypesDeclaration(
+    envelope['field_types'],
+    rootJson,
+    prefix,
+  );
+  final valDeclErrors = _validateFieldValuesDeclaration(
+    envelope['field_values'],
+    rootJson,
+    prefix,
+  );
+  final errors = [
+    ...envErrors,
+    ...tableColErrors,
+    ...typeDeclErrors,
+    ...valDeclErrors,
+  ];
+  if (typeDeclErrors.isNotEmpty || valDeclErrors.isNotEmpty) return errors;
+
   for (final entry in rootJson.entries) {
-    if (entry.key == 'field_types' ||
-        entry.key == 'table_columns' ||
-        entry.value is! List) {
-      continue;
-    }
+    if (entry.key == mdLiveEnvelopeKey || entry.value is! List) continue;
+    final items = entry.value as List<Object?>;
     final fieldTypes = resolveCollectionFieldTypes(rootJson, entry.key);
-    if (fieldTypes.isEmpty) continue;
-    errors.addAll(
-      _validateCollectionKnownFields(
-        entry.key,
-        entry.value as List<Object?>,
-        fieldTypes,
-        prefix,
-      ),
-    );
+    if (fieldTypes.isNotEmpty) {
+      errors.addAll(
+        _validateCollectionKnownFields(entry.key, items, fieldTypes, prefix),
+      );
+    }
+    final fieldValues = _resolveCollectionFieldValues(rootJson, entry.key);
+    if (fieldValues.isNotEmpty) {
+      errors.addAll(
+        _validateCollectionFieldValues(entry.key, items, fieldValues, prefix),
+      );
+    }
   }
   return errors;
 }
@@ -549,7 +528,9 @@ List<String> validateSentinelSources(
     final ({String filePath, String? selector}) spec;
     try {
       spec = parseSentinelSourceSpec(src);
-    } on FormatException catch (e) {
+      // parseSentinelSourceSpec reports malformed specs via ArgumentError.
+      // ignore: avoid_catching_errors
+    } on ArgumentError catch (e) {
       errors.add('${prefix}invalid sentinel src "$src" (${e.message})');
       continue;
     }
