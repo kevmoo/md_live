@@ -561,9 +561,12 @@ String projectSentinelMarkdown(
 /// Formats an integer with comma thousands separators (e.g. `195000` ->
 /// `195,000`, `-1250` -> `-1,250`).
 String formatCommaInt(int value) {
-  final str = value.abs().toString();
-  final buf = StringBuffer();
-  if (value < 0) buf.write('-');
+  final isNegative = value < 0;
+  final raw = value.toString();
+  // Strip the sign from the string rather than calling `abs()`, which
+  // overflows for the minimum 64-bit `int` on native targets.
+  final str = isNegative ? raw.substring(1) : raw;
+  final buf = StringBuffer(isNegative ? '-' : '');
   for (var i = 0; i < str.length; i++) {
     if (i > 0 && (str.length - i) % 3 == 0) {
       buf.write(',');

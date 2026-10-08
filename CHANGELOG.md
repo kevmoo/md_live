@@ -26,3 +26,5 @@
   without sentinel tables; `expectMdLiveClean` now discovers span-only files,
   verifies projection idempotency, and fails when `inlineValues` are provided
   but no live spans are found.
+- Fix `formatCommaInt` emitting a double minus sign for the minimum 64-bit `int`
+  on native targets.

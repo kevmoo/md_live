@@ -402,6 +402,13 @@ Count: <span data-live="total">0</span> (`<span data-live="ignored">x</span>`)
       );
     });
 
+    test('formatCommaInt handles the minimum 64-bit int', () {
+      // Computed rather than written as a literal: dart2js rejects integer
+      // literals beyond 2^53. `abs()` overflows for this value on the VM.
+      const minInt64 = -(1 << 62) * 2;
+      expect(formatCommaInt(minInt64), '-9,223,372,036,854,775,808');
+    }, testOn: 'vm');
+
     test(
       'formatCommaInt, formatCommaNum, and formatSpeedupRatio format cells',
       () {
