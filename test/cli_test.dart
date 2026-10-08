@@ -67,8 +67,10 @@ void main() {
         d.file(
           'items.json',
           '{\n'
-              '  "field_types": {"status": "status"},\n'
-              '  "table_columns": {"rows": ["name", "status"]},\n'
+              '  "@md_live": {\n'
+              '    "field_types": {"status": "status"},\n'
+              '    "table_columns": {"rows": ["name", "status"]}\n'
+              '  },\n'
               '  "rows": [\n'
               '    {"name": "Core", "status": "MERGED"}\n'
               '  ]\n'

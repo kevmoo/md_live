@@ -4,6 +4,7 @@ import 'dart:io' hide Process, ProcessException, ProcessResult, ProcessSignal;
 import 'package:path/path.dart' as p;
 import 'package:process/process.dart';
 
+import 'known_field_type.dart';
 import 'known_fields.dart';
 import 'md_live_core.dart';
 import 'sentinel_sources.dart';
@@ -95,7 +96,6 @@ int syncOrVerifyGeneratedFiles({
   String markdownPath, {
   Set<String> namespaces = const {},
   TableGuardMode guardMode = TableGuardMode.none,
-  Map<String, SentinelRowBuilder> rowBuilders = const {},
   Map<String, Map<String, String Function(Map<String, dynamic> row)>>
       cellFormatters =
       const {},
@@ -133,10 +133,10 @@ int syncOrVerifyGeneratedFiles({
       : extractSentinelNamespaces(markdown);
   try {
     if (activeNamespaces.isEmpty) {
-      final projected = inlineValues.isNotEmpty
-          ? projectInlineLiveSpans(markdown, inlineValues)
-          : markdown;
-      return (projected: projected, errors: const []);
+      return (
+        projected: projectInlineLiveSpans(markdown, inlineValues),
+        errors: const [],
+      );
     }
     var current = markdown;
     for (final ns in activeNamespaces) {
@@ -144,7 +144,6 @@ int syncOrVerifyGeneratedFiles({
         current,
         namespace: ns,
         jsonByPath: jsonByPath,
-        rowBuilders: rowBuilders,
         cellFormatters: cellFormatters,
         customTableRows: customTableRows,
         inlineValues: inlineValues,

@@ -1,29 +1,10 @@
+import 'known_field_type.dart';
 import 'known_fields.dart';
 import 'sentinel_sources.dart';
 
 /// Extracts a typed list of JSON object maps from `data[key]`.
 List<Map<String, dynamic>> recordsList(Map<String, dynamic> data, String key) =>
     (data[key] as List).cast<Map<String, dynamic>>();
-
-({RegExpMatch startMatch, int endIdx, String endTag})?
-_matchSentinelBlockBounds(
-  String markdown, {
-  required String namespace,
-  required String sentinelId,
-}) {
-  final escNs = RegExp.escape(namespace);
-  final escId = RegExp.escape(sentinelId);
-  final startPattern = RegExp(
-    '<!--\\s*$escNs:$escId:start(?:\\s+([^>]*?))?\\s*-->',
-  );
-  final endTag = '<!-- $namespace:$sentinelId:end -->';
-  final startMatch = startPattern.firstMatch(markdown);
-  final endIdx = markdown.indexOf(endTag);
-  if (startMatch == null || endIdx == -1 || endIdx <= startMatch.end) {
-    return null;
-  }
-  return (startMatch: startMatch, endIdx: endIdx, endTag: endTag);
-}
 
 /// Splices [renderedBody] between `<!-- $namespace:$sentinelId:start ... -->`
 /// and `<!-- $namespace:$sentinelId:end -->` in [markdown] with blank-line
@@ -39,30 +20,26 @@ String replaceSentinelBlock(
   required String renderedBody,
   String? src,
 }) {
-  final bounds = _matchSentinelBlockBounds(
+  final block = parseSentinelBlocks(
     markdown,
     namespace: namespace,
     sentinelId: sentinelId,
-  );
-  if (bounds == null) {
+  ).firstOrNull;
+  if (block == null) {
     throw StateError(
       'Missing or misordered sentinel pair '
       '"<!-- $namespace:$sentinelId:start -->" ... '
       '"<!-- $namespace:$sentinelId:end -->".',
     );
   }
-  final existingAttrs = bounds.startMatch.group(1)?.trim() ?? '';
   final resolvedAttr = (src != null && src.trim().isNotEmpty)
       ? ' src="${src.trim()}"'
-      : (existingAttrs.isNotEmpty ? ' $existingAttrs' : '');
-  final startTag = '<!-- $namespace:$sentinelId:start$resolvedAttr -->';
+      : (block.attrs.isNotEmpty ? ' ${block.attrs}' : '');
   final replacement =
-      '$startTag\n\n${renderedBody.trimRight()}\n\n${bounds.endTag}';
-  return markdown.replaceRange(
-    bounds.startMatch.start,
-    bounds.endIdx + bounds.endTag.length,
-    replacement,
-  );
+      '<!-- $namespace:$sentinelId:start$resolvedAttr -->\n\n'
+      '${renderedBody.trimRight()}\n\n'
+      '<!-- $namespace:$sentinelId:end -->';
+  return markdown.replaceRange(block.start, block.end, replacement);
 }
 
 /// Splices multiple sentinel blocks (`sentinelId -> renderedBody`) from
@@ -234,11 +211,6 @@ typedef ParsedMarkdownTableHeader = ({
   String? guardComment,
 });
 
-/// Row builder callback for [projectSentinelMarkdown] when a collection uses
-/// custom composite cells.
-typedef SentinelRowBuilder =
-    List<String> Function(Map<String, dynamic> record, int rowIndex);
-
 final RegExp _mdformatOffGuardPattern = RegExp(
   r'^\s*<!--\s*mdformat\s+off(?:\(([^)]*)\))?\s*-->',
   multiLine: true,
@@ -355,7 +327,7 @@ List<String>? _lookupDeclaredTableColumns(
   Map<String, dynamic> rootJson,
   String collectionKey,
 ) {
-  final rawCols = rootJson['table_columns'];
+  final rawCols = mdLiveEnvelope(rootJson)?['table_columns'];
   if (rawCols is! Map) return null;
   final list = rawCols[collectionKey];
   if (list is! List) return null;
@@ -379,45 +351,22 @@ List<String> resolveCollectionTableColumns(
     throw StateError(
       'Cannot resolve $expectedColumnCount table columns for "$collectionKey" '
       '(got ${candidates.length} keys: ${candidates.join(', ')}). '
-      'Declare "table_columns" in JSON or cols="..." on the sentinel marker.',
+      'Declare "@md_live.table_columns" in JSON or cols="..." on the '
+      'sentinel marker.',
     );
   }
   return candidates;
 }
 
-/// Returns the trimmed body inside `<!-- $namespace:$sentinelId:start ... -->`
-/// and `<!-- $namespace:$sentinelId:end -->` in [markdown], or `null` if no
-/// matching sentinel block exists.
-String? extractSentinelBlockBody(
-  String markdown, {
-  required String namespace,
-  required String sentinelId,
-}) {
-  final bounds = _matchSentinelBlockBounds(
-    markdown,
-    namespace: namespace,
-    sentinelId: sentinelId,
-  );
-  if (bounds == null) return null;
-  return markdown.substring(bounds.startMatch.end, bounds.endIdx).trim();
-}
-
-String? _extractMarkerAttr(String attrs, String name) {
-  final match = RegExp('\\b$name="([^"]*)"').firstMatch(attrs);
-  final val = match?.group(1)?.trim();
-  return (val == null || val.isEmpty) ? null : val;
-}
-
 typedef _SentinelProjection = ({
   String namespace,
   Map<String, Map<String, dynamic>> jsonByPath,
-  Map<String, SentinelRowBuilder> rowBuilders,
   Map<String, Map<String, String Function(Map<String, dynamic> row)>>
   cellFormatters,
   Map<String, List<List<String>>> customTableRows,
   Set<String> continuousIndexCollections,
   Map<String, int> collectionRowCounters,
-  TableGuardMode? guardMode,
+  TableGuardMode guardMode,
 });
 
 String _renderSentinelTableBody(
@@ -429,19 +378,18 @@ String _renderSentinelTableBody(
   final namespace = projection.namespace;
   final tableSpec = parseMarkdownTableHeader(
     existingBody,
-    defaultGuardMode: projection.guardMode ?? TableGuardMode.none,
+    defaultGuardMode: projection.guardMode,
   );
-  final effectiveGuardMode = projection.guardMode ?? tableSpec.guardMode;
   if (projection.customTableRows[sentinelId] case final prebuiltRows?) {
     return renderGuardedMarkdownTable(
       headers: tableSpec.headers,
       alignments: tableSpec.alignments,
       rows: prebuiltRows,
-      guardMode: effectiveGuardMode,
+      guardMode: projection.guardMode,
       guardComment: tableSpec.guardComment,
     );
   }
-  final src = _extractMarkerAttr(attrs, 'src');
+  final src = extractSentinelMarkerAttr(attrs, 'src');
   if (src == null) {
     throw StateError(
       'Sentinel block "$namespace:$sentinelId" is missing src="...".',
@@ -477,40 +425,22 @@ String _renderSentinelTableBody(
     projection.collectionRowCounters[collectionKey] =
         startRowNumber + slice.length;
   }
-  final rowBuilder =
-      projection.rowBuilders[sentinelId] ??
-      projection.rowBuilders[collectionKey];
-  if (rowBuilder != null) {
-    return renderGuardedMarkdownTable(
-      headers: tableSpec.headers,
-      alignments: tableSpec.alignments,
-      rows: [
-        for (var i = 0; i < slice.length; i++)
-          rowBuilder(slice[i], startRowNumber - 1 + i),
-      ],
-      guardMode: effectiveGuardMode,
-      guardComment: tableSpec.guardComment,
-    );
-  }
   final keys = resolveCollectionTableColumns(
     rootJson,
     collectionKey,
     expectedColumnCount: tableSpec.headers.length,
     records: slice,
-    explicitColsAttr: _extractMarkerAttr(attrs, 'cols'),
+    explicitColsAttr: extractSentinelMarkerAttr(attrs, 'cols'),
   );
   return renderKeyedMarkdownTable(
     slice,
     headers: tableSpec.headers,
     alignments: tableSpec.alignments,
     keys: keys,
-    cellFormatters:
-        projection.cellFormatters[sentinelId] ??
-        projection.cellFormatters[collectionKey] ??
-        const {},
+    cellFormatters: projection.cellFormatters[collectionKey] ?? const {},
     fieldTypes: resolveCollectionFieldTypes(rootJson, collectionKey),
     startRowNumber: startRowNumber,
-    guardMode: effectiveGuardMode,
+    guardMode: projection.guardMode,
     guardComment: tableSpec.guardComment,
   );
 }
@@ -584,39 +514,36 @@ String projectInlineLiveSpans(
 /// `<span data-live="key">...</span>` elements in [markdown] directly from
 /// their declared `src="<file.json>#<selector>"` attributes, existing in-file
 /// GFM table headers/alignments, and [inlineValues].
+///
+/// Tables are rendered with [guardMode] (defaulting to [TableGuardMode.none]
+/// for GitHub / Prettier repositories), stripping any existing `mdformat`
+/// guard comments when [guardMode] is [TableGuardMode.none].
 String projectSentinelMarkdown(
   String markdown, {
   required String namespace,
   required Map<String, Map<String, dynamic>> jsonByPath,
-  Map<String, SentinelRowBuilder> rowBuilders = const {},
   Map<String, Map<String, String Function(Map<String, dynamic> row)>>
       cellFormatters =
       const {},
   Map<String, List<List<String>>> customTableRows = const {},
   Map<String, Object> inlineValues = const {},
   Set<String> continuousIndexCollections = const {},
-  TableGuardMode? guardMode = TableGuardMode.none,
+  TableGuardMode guardMode = TableGuardMode.none,
 }) {
-  final escNs = RegExp.escape(namespace);
-  final pattern = RegExp(
-    '<!--\\s*$escNs:([a-zA-Z0-9_:-]+):start(?:\\s+([^>]*?))?\\s*-->'
-    r'([\s\S]*?)'
-    '<!--\\s*$escNs:\\1:end\\s*-->',
-  );
   final projection = (
     namespace: namespace,
     jsonByPath: jsonByPath,
-    rowBuilders: rowBuilders,
     cellFormatters: cellFormatters,
     customTableRows: customTableRows,
     continuousIndexCollections: continuousIndexCollections,
     collectionRowCounters: <String, int>{},
     guardMode: guardMode,
   );
-  final withTables = markdown.replaceAllMapped(pattern, (match) {
-    final sentinelId = match.group(1)!;
-    final attrs = match.group(2)?.trim() ?? '';
-    final existingBody = match.group(3)!;
+  final withTables = markdown.replaceAllMapped(sentinelBlockPattern, (match) {
+    if (match.group(1) != namespace) return match.group(0)!;
+    final sentinelId = match.group(2)!;
+    final attrs = match.group(3)?.trim() ?? '';
+    final existingBody = match.group(4)!;
     final rendered = _renderSentinelTableBody(
       projection,
       sentinelId: sentinelId,

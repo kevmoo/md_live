@@ -17,10 +17,15 @@ type validation, or Prettier (`mdf`) compatibility.
 - **Inline Live Spans (`<span data-live="key">...</span>`)**:
   - Updates computed metrics or version badges inline inside prose paragraphs
     while ignoring fenced code blocks and inline code spans.
-- **Declarative Schema & Field Validation (`field_types` & `table_columns`)**:
-  - Validates and formats `status` (`KnownStatus` lifecycle badges),
-    `tracker_link` (canonical GitHub PR/Issue URLs), `slot_id`, and `code_span`
-    fields directly from JSON metadata.
+- **Declarative Schema & Field Validation (`@md_live` envelope)**:
+  - All `md_live` directives live under a single reserved root `"@md_live"` key,
+    keeping data collections and schema metadata cleanly separated.
+  - `field_types` validates and formats `status` (`KnownStatus` lifecycle
+    badges), `tracker_link` (canonical GitHub PR/Issue URLs), `slot_id`, and
+    `code_span` fields directly from JSON metadata.
+  - `field_values` declares closed allowlists for free-form string fields
+    (`"kind": ["perf", "fix"]`).
+  - `table_columns` declares the record keys projected into each table.
 - **Compact JSON Formatting (`formatCompactJson`)**:
   - Formats structured JSON with 2-space indentation while collapsing primitive
     leaf objects onto single lines (`{"id": "H01", "status": "MERGED"}`) for
@@ -52,19 +57,31 @@ Pair it with a structured JSON file (`benchmarks.json`):
 
 ```json
 {
-  "field_types": {
-    "slot": "slot_id",
-    "status": "status",
-    "pr": "tracker_link"
-  },
-  "table_columns": {
-    "runs": ["#index", "slot", "status", "pr"]
+  "@md_live": {
+    "field_types": {
+      "slot": "slot_id",
+      "status": "status",
+      "pr": "tracker_link"
+    },
+    "field_values": {
+      "runs.kind": ["perf", "fix"]
+    },
+    "table_columns": {
+      "runs": ["#index", "slot", "status", "pr"]
+    }
   },
   "runs": [
-    {"slot": "H01", "status": "MERGED", "pr": "https://github.com/kevmoo/md_live/pull/1"}
+    {"slot": "H01", "status": "MERGED", "kind": "perf", "pr": "https://github.com/kevmoo/md_live/pull/1"}
   ]
 }
 ```
+
+`field_types` and `field_values` keys resolve at three levels (later wins):
+top-level defaults (`"status"`), dotted collection scopes (`"runs.status"`), and
+nested collection maps (`"runs": {"status": ...}`).
+
+Per-sentinel column overrides use `cols="..."` on the start marker
+(`<!-- bench:results:start src="..." cols="slot,status" -->`).
 
 ## CLI Usage
 
@@ -94,9 +111,11 @@ import 'package:md_live/md_live.dart';
 
 void main() {
   final json = <String, dynamic>{
-    'field_types': {'status': 'status'},
-    'table_columns': {
-      'items': ['name', 'status'],
+    mdLiveEnvelopeKey: {
+      'field_types': {'status': 'status'},
+      'table_columns': {
+        'items': ['name', 'status'],
+      },
     },
     'items': [
       {'name': 'Parser', 'status': 'MERGED'},
